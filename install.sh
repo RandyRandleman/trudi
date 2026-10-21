@@ -130,6 +130,22 @@ else
 fi
 
 
+# ── 1c-bis. Linux-native artifact parsers (EVTX / Prefetch / SRUM) ───────────
+
+step "Installing Linux-native artifact parsers"
+
+if command -v cargo &>/dev/null; then
+    if bash "$TRUDI_DIR/scripts/install_linux_parsers.sh" --prefix /usr/local/bin; then
+        ok "evtx_dump / trudi-prefetch / chainsaw installed (see docs/linux-native-parsers.md)"
+    else
+        warn "native parser install failed — artifact.* tools will report parser_unavailable"
+    fi
+else
+    warn "cargo (Rust 1.85+) not found — skipping evtx_dump / trudi-prefetch."
+    warn "  Install Rust, then: $TRUDI_DIR/scripts/install_linux_parsers.sh"
+fi
+
+
 # ── 1cc. Trace dashboard ─────────────────────────────────────────────────────
 
 step "Verifying trace dashboard"

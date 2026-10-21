@@ -969,7 +969,7 @@ def _ask_claude(system: str, user: str, max_tokens: int, _tool_name: str,
             }],
             messages=[{"role": "user", "content": user}],
         )
-        raw = resp.content[0].text
+        raw = "".join(b.text for b in resp.content if isinstance(getattr(b, "text", None), str))  # skip thinking blocks (they carry no .text)
         fields = _structured_fields(raw, _tool_name)
         result = {
             "success": True,

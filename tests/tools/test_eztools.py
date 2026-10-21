@@ -32,17 +32,34 @@ class TestMftEcmd:
 
 
 class TestEvtxEcmd:
-    def test_evtxecmd(self, mock_dotnet, tmp_path):
-        from tools.eztools import ez_evtxecmd
-        ez_evtxecmd("/mnt/wkstn01/Windows/System32/winevt/Logs/", str(tmp_path))
-        args = mock_dotnet.call_args[0][1]
-        assert "--csv" in args
+    """ez.evtxecmd is now a DEPRECATED alias that routes to the Linux-native
+    evtx_dump backend (tools/artifacts.py). It must never invoke dotnet, and it
+    must keep writing the CSV its old callers expect."""
 
-    def test_evtxecmd_event_ids_filter(self, mock_dotnet, tmp_path):
+    def test_evtxecmd_routes_to_native_backend(self, mock_dotnet, tmp_path):
         from tools.eztools import ez_evtxecmd
-        ez_evtxecmd("/logs/", str(tmp_path), event_ids="4624,4625,4648")
-        args = mock_dotnet.call_args[0][1]
-        assert any("4624" in a for a in args)
+        with patch("tools.artifacts.parse_windows_event_logs",
+                   return_value={"success": True}) as native:
+            r = ez_evtxecmd("/mnt/wkstn01/Windows/System32/winevt/Logs/", str(tmp_path))
+        assert not mock_dotnet.called
+        assert native.call_args.kwargs["evtx_path"].endswith("Logs/")
+        assert native.call_args.kwargs["output_path"].endswith(".jsonl")
+        assert "deprecated" in r
+
+    def test_evtxecmd_event_ids_filter_is_forwarded(self, mock_dotnet, tmp_path):
+        from tools.eztools import ez_evtxecmd
+        with patch("tools.artifacts.parse_windows_event_logs",
+                   return_value={"success": False}) as native:
+            ez_evtxecmd("/logs/", str(tmp_path), event_ids="4624,4625,4648")
+        assert native.call_args.kwargs["event_ids"] == "4624,4625,4648"
+        assert not mock_dotnet.called
+
+    def test_evtxecmd_maps_dir_is_reported_as_ignored(self, mock_dotnet, tmp_path):
+        from tools.eztools import ez_evtxecmd
+        with patch("tools.artifacts.parse_windows_event_logs",
+                   return_value={"success": False}):
+            r = ez_evtxecmd("/logs/", str(tmp_path), maps_dir="/custom/Maps")
+        assert any(w["code"] == "maps_dir_ignored" for w in r["warnings"])
 
 
 class TestReCmd:
@@ -71,33 +88,27 @@ class TestParserTools:
         ez_appcompatcacheparser("/mnt/wkstn01/Windows/System32/config/SYSTEM", str(tmp_path))
         assert mock_dotnet.called
 
-    def test_pecmd_prefetch(self, mock_dotnet, tmp_path):
+    def test_pecmd_routes_to_native_backend(self, mock_dotnet, tmp_path):
+        """PECmd cannot decompress Win8+ prefetch off Windows — ez.pecmd is now a
+        deprecated alias over the native (clean-room Xpress-Huffman) backend."""
         from tools.eztools import ez_pecmd
-        ez_pecmd("/mnt/wkstn01/Windows/Prefetch/", str(tmp_path))
-        args = mock_dotnet.call_args[0][1]
-        assert "--csv" in args
+        with patch("tools.artifacts.parse_windows_prefetch",
+                   return_value={"success": True}) as native:
+            r = ez_pecmd("/mnt/wkstn01/Windows/Prefetch/", str(tmp_path))
+        assert not mock_dotnet.called
+        assert native.call_args.kwargs["prefetch_path"].endswith("Prefetch/")
+        assert native.call_args.kwargs["output_path"].endswith(".jsonl")
+        assert "deprecated" in r
 
-    def test_pecmd_missing_dll_returns_fallback(self, tmp_path):
-        # dotnet fails AND the .dll is absent → tool_unavailable + fallback that
-        # names the execution-evidence alternatives (UserAssist / Amcache / …).
+    def test_pecmd_native_failure_is_surfaced_not_relabelled(self, mock_dotnet, tmp_path):
         from tools.eztools import ez_pecmd
-        fail = {"success": False, "stderr": "The application '…PECmd.dll' does not exist",
-                "exit_code": 145, "cmd": "dotnet …PECmd.dll"}
-        with patch("tools.eztools.run_dotnet", return_value=dict(fail)), \
-             patch("tools.eztools.os.path.exists", return_value=False):
+        with patch("tools.artifacts.parse_windows_prefetch",
+                   return_value={"success": False, "parser_unavailable": True,
+                                 "error": "trudi-prefetch not found",
+                                 "install_hint": "cargo build ..."}):
             r = ez_pecmd("/mnt/x/Windows/Prefetch/", str(tmp_path))
-        assert r["tool_unavailable"] is True
-        assert "not installed" in r["error"] and "PECmd.dll" in r["error"]
-        assert "UserAssist" in r["fallback"] and "amcache" in r["fallback"].lower()
-
-    def test_present_dll_failure_is_not_marked_unavailable(self, tmp_path):
-        # A genuine runtime fault (dll present) must NOT be relabelled unavailable.
-        from tools.eztools import ez_pecmd
-        fail = {"success": False, "stderr": "some runtime error", "exit_code": 1}
-        with patch("tools.eztools.run_dotnet", return_value=dict(fail)), \
-             patch("tools.eztools.os.path.exists", return_value=True):
-            r = ez_pecmd("/mnt/x/Windows/Prefetch/", str(tmp_path))
-        assert "tool_unavailable" not in r and "fallback" not in r
+        assert r["success"] is False and r["parser_unavailable"] is True
+        assert "trudi-prefetch" in r["error"]
 
     def test_jlecmd(self, mock_dotnet, tmp_path):
         from tools.eztools import ez_jlecmd

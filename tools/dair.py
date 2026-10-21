@@ -306,7 +306,7 @@ def _ask_claude(system: str, user: str, max_tokens: int = 2048) -> dict:
             }],
             messages=[{"role": "user", "content": user}],
         )
-        raw = resp.content[0].text
+        raw = "".join(b.text for b in resp.content if isinstance(getattr(b, "text", None), str))  # skip thinking blocks (they carry no .text)
         return {
             "success": True,
             "raw": raw,

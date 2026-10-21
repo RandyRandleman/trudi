@@ -252,13 +252,48 @@ class TestScheduledTasks:
 
 
 class TestUsnParser:
-    def test_usnparser(self, mock_run):
+    def test_usnparser_requires_output_and_resolves_binary(self, mock_run, tmp_path):
+        """output_path is now mandatory (usn.py has no stdout mode) and the binary
+        is discovered rather than hard-coded — see test_usnparser_resolution.py."""
         from tools.misc import usnparser_parse
-        usnparser_parse("/mnt/wkstn01/$UsnJrnl")
+        journal = tmp_path / "usnjrnl_J.bin"
+        journal.write_bytes(b"\x00" * 64 + b"\x50\x00\x00\x00\x02\x00" + b"\x11" * 200)
+        with patch("tools.misc._resolve_usnparser", return_value="/opt/venv/bin/usn.py"):
+            usnparser_parse(str(journal), str(tmp_path / "usn.csv"))
         assert mock_run.called
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "/opt/venv/bin/usn.py" and "-o" in cmd and "-c" in cmd
 
 
 class TestHindsight:
+    @pytest.fixture(autouse=True)
+    def _hs_installed(self):
+        with patch("tools.misc._hindsight_bin", return_value="/usr/local/bin/hindsight.py"):
+            yield
+
+    def test_hindsight_browser_auto_omits_b(self, mock_run, tmp_path):
+        from tools.misc import hindsight_chrome
+        hindsight_chrome("/p", str(tmp_path))
+        assert "-b" not in mock_run.call_args[0][0]
+
+    def test_hindsight_browser_edge_and_firefox(self, mock_run, tmp_path):
+        from tools.misc import hindsight_chrome
+        for b in ("edge", "firefox"):
+            r = hindsight_chrome("/p", str(tmp_path), browser=b)
+            cmd = mock_run.call_args[0][0]
+            assert cmd[cmd.index("-b") + 1] == b and r["browser"] == b
+
+    def test_hindsight_ie_redirects_to_webcache(self, mock_run, tmp_path):
+        from tools.misc import hindsight_chrome
+        r = hindsight_chrome("/p", str(tmp_path), browser="ie")
+        assert not mock_run.called and "webcache_parse" in r["error"]
+
+    def test_hindsight_missing_binary_is_explained(self, mock_run, tmp_path):
+        from tools.misc import hindsight_chrome
+        with patch("tools.misc._hindsight_bin", return_value=None):
+            r = hindsight_chrome("/p", str(tmp_path))
+        assert not mock_run.called and "pyhindsight" in r["error"]
+
     def test_hindsight_chrome(self, mock_run, tmp_path):
         from tools.misc import hindsight_chrome
         hindsight_chrome("/mnt/wkstn01/Users/mhill/AppData/Local/Google/Chrome/User Data/Default", str(tmp_path))
@@ -1624,3 +1659,71 @@ class TestTypedTierAndCiteVerdict:
                              inputs={"user_message": f"FINDING:\n{desc}"},
                              extra={"cite_verdict": "ALL_CITED"})
         assert cc.check(self._ctx(l, desc, "LIKELY")) is None
+
+
+class TestWebCache:
+    def test_webcache_parse_writes_tsv_and_filters(self, tmp_path):
+        from tools import misc
+        tsv = ("=== IE/Edge WebCache: x ===\ndatabase_state: clean shutdown\ncontainers: History=1\n"
+               "accessed_utc\tmodified_utc\tcreated_utc\tcontainer\turl\tdetails\n"
+               "2020-09-19 03:32:21\t\t\tHistory\tVisited: a@file:///C:/x.txt\t\n"
+               "2020-09-19 03:00:00\t\t\tContent\thttp://cdn/x.js\t\n")
+
+        def fake(cmd, output_path, timeout):
+            open(output_path, "w").write(tsv)
+            return {"success": True, "stdout": "", "stderr": ""}
+
+        with patch.object(misc, "_pyesedb_python", return_value="/usr/bin/python3"), \
+             patch.object(misc, "run_with_output_file", side_effect=fake) as m:
+            r = misc.webcache_parse("/case/WebCacheV01.dat", str(tmp_path))
+        assert m.call_args[0][0][2].endswith("webcache_parse.py")
+        assert r["rows_total"] == 2
+        assert r["history_download_file_rows"] == [tsv.splitlines()[4]]
+        assert r["summary"][-1].startswith("accessed_utc")
+
+    def test_webcache_parse_without_pyesedb(self, tmp_path):
+        from tools import misc
+        with patch.object(misc, "_pyesedb_python", return_value=None):
+            r = misc.webcache_parse("/x.dat", str(tmp_path))
+        assert not r["success"] and "libesedb-python" in r["error"]
+
+    def test_webcache_parser_real_helpers(self):
+        from tools import webcache_parse as w
+        assert w.filetime(132449616494100000).startswith("2020-")
+
+
+class TestXdrCollector:
+    def _collector(self, tmp_path):
+        import io, json, zipfile, hashlib
+        data = b"srum"
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as z:
+            z.writestr("manifest.json", json.dumps({"entries": [{"files": [{
+                "path": "C:\\Windows\\System32\\sru\\SRUDB.dat",
+                "archivedPath": "entry_1_0\\SRUDB.dat",
+                "sha256": hashlib.sha256(data).hexdigest()}]}]}))
+            z.writestr("entry_1_0/SRUDB.dat", data)
+        p = tmp_path / "offline_collector_output_H.zip"
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("output/manifest.json", json.dumps({"configuration_name": "WindowsHeavy",
+                       "agentStatus": {"deviceName": "H"}, "files": [{}]}))
+            z.writestr("output/cortex-xdr-payload.log", "x")
+            z.writestr("output/srum_db-collection/script_output.zip", inner.getvalue())
+        return p
+
+    def test_detect(self, tmp_path):
+        from tools.misc import xdr_detect_offline_collector
+        assert xdr_detect_offline_collector(str(self._collector(tmp_path)))["device_name"] == "H"
+        assert xdr_detect_offline_collector(str(tmp_path))["is_collector"] is False
+
+    def test_normalize(self, tmp_path):
+        from tools.misc import xdr_normalize_offline_collector
+        out = tmp_path / "norm"
+        r = xdr_normalize_offline_collector(str(self._collector(tmp_path)), str(out))
+        assert r["success"] and r["raw_files"] == 1
+        assert (out / "C/Windows/System32/sru/SRUDB.dat").read_bytes() == b"srum"
+
+    def test_normalize_rejects_non_collector(self, tmp_path):
+        from tools.misc import xdr_normalize_offline_collector
+        r = xdr_normalize_offline_collector(str(tmp_path), str(tmp_path / "o"))
+        assert not r["success"] and "not a Cortex XDR" in r["error"]

@@ -10,10 +10,21 @@ from __future__ import annotations
 import copy
 
 
-MANIFEST_VERSION = "2026-08-25.1"
+MANIFEST_VERSION = "2026-09-17.1"
 
 
 _CAPABILITIES: list[dict] = [
+    {
+        "id": "resource_usage_srum",
+        "phases": ["Analyze", "Scan"],
+        "evidence": ["disk", "mounted_fs"],
+        "purpose": ("Per-application/user network bytes, run duration and energy usage from "
+                    "SRUM (SRUDB.dat + SOFTWARE hive). Linux-native (windows.srum); the only "
+                    "artifact that quantifies bytes moved per process — key for exfil ranking."),
+        "tools": [
+            "artifact.parse_windows_srum",
+        ],
+    },
     {
         "id": "reasoning_control",
         "phases": ["Triage", "Analyze", "Report"],
@@ -75,6 +86,7 @@ _CAPABILITIES: list[dict] = [
             "ez.mftecmd",
             "ez.jlecmd",
             "ez.lecmd",
+            "artifact.parse_windows_prefetch",
             "ez.pecmd",
             "misc.usnparser_parse",
             "plaso.create_timeline",
@@ -106,6 +118,7 @@ _CAPABILITIES: list[dict] = [
         "evidence": ["disk", "live"],
         "purpose": "Parse Windows event logs for authentication, service, task, PowerShell, and timeline events.",
         "tools": [
+            "artifact.parse_windows_event_logs",
             "ez.evtxecmd",
             "misc.evtx_filter",
             "misc.evtx_dump",

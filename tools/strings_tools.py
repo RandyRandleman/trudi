@@ -308,6 +308,16 @@ def floss_extract(
                 "floss not installed — pip install flare-floss"}
     cmd = [binary, "-n", str(min_length)]
     if output_path:
-        cmd += ["-j", output_path]
+        # -j is a switch (JSON to stdout), not "-j <file>": passing the output
+        # path there made floss treat it as the sample and exit 255.
+        cmd += ["-j"]
     cmd.append(file_path)
-    return run(cmd, timeout=600)
+    result = run(cmd, timeout=600)
+    if output_path and result.get("success") and result.get("stdout"):
+        try:
+            with open(output_path, "w") as f:
+                f.write(result["stdout"])
+            result["output_path"] = output_path
+        except OSError as e:
+            result["write_error"] = str(e)
+    return result

@@ -285,20 +285,109 @@ def regripper_list_plugins() -> dict:
 
 # ── USN Journal ───────────────────────────────────────────────────────────────
 
+#: Binary names/paths that provide a USN journal parser, in preference order.
+#: The pip package `usnparser` installs its CLI as `usn.py` — the old hard-coded
+#: `/usr/local/bin/usnparser` path matched NOTHING, which is why this tool
+#: reported "Tool not found" rather than "no USN records".
+_USN_CANDIDATES = ("usn.py", "usnparser", "/usr/local/bin/usn.py",
+                   "/usr/local/bin/usnparser", "/opt/venv/bin/usn.py")
+
+
+def _resolve_usnparser() -> Optional[str]:
+    """Locate an installed USN parser: TRUDI_USNPARSER, then PATH, then known dirs."""
+    import shutil as _shutil
+    override = os.environ.get("TRUDI_USNPARSER")
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        return override
+    for cand in _USN_CANDIDATES:
+        found = _shutil.which(cand) if not os.path.isabs(cand) else (
+            cand if os.path.isfile(cand) and os.access(cand, os.X_OK) else None)
+        if found:
+            return found
+    return None
+
+
 @mcp.tool()
 @output_safe
-def usnparser_parse(usn_journal: str, output_path: Optional[str] = None) -> dict:
+def usnparser_parse(usn_journal: str, output_path: str, output_format: str = "csv") -> dict:
     """
-    Parse the NTFS USN Change Journal ($UsnJrnl:$J).
-    usn_journal: path to extracted $J stream (from tsk_icat on inode 11-128-4).
-    output_path: optional CSV output path.
+    Parse the NTFS USN Change Journal ($UsnJrnl:$J) with the installed usnparser
+    (PoorBillionaire USN-Journal-Parser, CLI name `usn.py`).
+
+    usn_journal: path to the EXTRACTED $J stream. Discover its inode/attribute
+                 from the image first (fls on /$Extend, then istat) — do not
+                 assume 11-128-4 or any other address.
+    output_path: required. usn.py has no stdout mode; -o is mandatory.
+    output_format: "csv" (timestamp, filename, fileattr, reason) or
+                   "body" (TSK bodyfile, carries MFT entry-sequence).
+
+    FIELD LIMITATION: this parser's CSV does NOT emit file reference numbers or
+    parent FRNs, and its JSON (-v) mode is broken in 4.1.5 (writes str to a
+    binary file handle and aborts after the first record). When you need FRN /
+    parent-FRN / USN / source-info fields, parse the same $J with MFTECmd
+    instead: ez.mftecmd(mft_path="<extracted $J>", output_dir=..., output_file=...)
+    — MFTECmd detects $J input and is managed .NET, so it runs on Linux.
     """
-    if output_path:
-        assert_output_safe(output_path)
-    cmd = ["/usr/local/bin/usnparser", "-f", usn_journal]
-    if output_path:
-        cmd += ["-o", output_path]
-    return run(cmd, timeout=300)
+    fmt_flag = {"csv": "-c", "body": "-b"}.get(output_format)
+    if not fmt_flag:                                    # argument validation first
+        return {"success": False, "error": "output_format must be 'csv' or 'body'"}
+    assert_output_safe(output_path)
+    # usnparser 4.1.5 LOOPS FOREVER on an all-zero journal region (a sparse or
+    # mis-extracted $J), so check for payload before handing it the file.
+    try:
+        size = os.path.getsize(usn_journal)
+        has_payload = False
+        with open(usn_journal, "rb") as fh:
+            while chunk := fh.read(1024 * 1024):
+                if any(chunk):
+                    has_payload = True
+                    break
+        if not has_payload:
+            return {
+                "success": False,
+                "error": (f"{usn_journal} is {size} bytes of zeros — no USN records. "
+                          "This usually means the extracted stream was the sparse "
+                          "$UsnJrnl:$Max or a sparse region of $J, not the $J data. "
+                          "Re-discover the inode/attribute with fls + istat and extract "
+                          "the $J data attribute."),
+                "records_parsed": 0,
+                "input_size": size,
+            }
+    except OSError as e:
+        return {"success": False, "error": f"cannot read {usn_journal}: {e}"}
+    binary = _resolve_usnparser()
+    if not binary:
+        return {
+            "success": False,
+            "tool_unavailable": True,
+            "error": ("No USN journal parser found (looked for TRUDI_USNPARSER, "
+                      f"then {', '.join(_USN_CANDIDATES)})."),
+            "install_hint": "pip install usnparser==4.1.5  (installs the `usn.py` CLI)",
+            "fallback": ("Parse the extracted $J with MFTECmd instead — it handles $J "
+                         "and runs on Linux: ez.mftecmd(mft_path='<$J>', output_dir=..., "
+                         "output_file='usnjrnl.csv'). Absence of this binary is NOT "
+                         "absence of USN evidence."),
+        }
+    result = run([binary, "-f", usn_journal, "-o", output_path, fmt_flag], timeout=300)
+    result["parser_binary"] = binary
+    result["output_path"] = output_path
+    result["field_limitation"] = (
+        "csv/body output omits file reference numbers and parent FRNs; use MFTECmd "
+        "on the same $J when those fields are needed")
+    try:
+        if os.path.exists(output_path):
+            with open(output_path, "r", encoding="utf-8", errors="replace") as fh:
+                lines = sum(1 for _ in fh)
+            result["output_lines"] = lines
+            result["records_parsed"] = max(0, lines - (1 if output_format == "csv" else 0))
+            if not result.get("records_parsed"):
+                result["success"] = False
+                result["error"] = (f"{binary} exited cleanly but produced no USN records "
+                                   f"from {usn_journal} — verify the extracted stream is "
+                                   "the $J data attribute and is non-sparse")
+    except OSError:
+        pass
+    return result
 
 
 # ── MFT analysis ─────────────────────────────────────────────────────────────
@@ -320,31 +409,59 @@ def analyzemft_parse(mft_path: str, output_csv: str) -> dict:
 
 # ── Browser forensics ─────────────────────────────────────────────────────────
 
+_HINDSIGHT_BROWSERS = {"chrome", "chromium", "edge", "brave", "vivaldi", "firefox", "tor"}  # Hindsight -b names; Opera auto-detects only
+_WEBCACHE_PARSER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webcache_parse.py")
+
+
+def _hindsight_bin() -> Optional[str]:
+    for c in ("/usr/local/bin/hindsight.py", shutil.which("hindsight.py") or "",
+              "/opt/venv/bin/hindsight.py"):
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
 @mcp.tool()
 @output_safe
 def hindsight_chrome(
     profile_path: str,
     output_dir: str,
     output_format: str = "jsonl",
+    browser: str = "auto",
 ) -> dict:
     """
-    Parse Chrome/Chromium browser history, cookies, cache, and extensions using Hindsight.
-    profile_path: path to Chrome 'Default' profile directory.
+    Parse browser history, downloads, cookies, cache, local storage and extensions with
+    Hindsight. Works on any Chromium-family profile (Chrome, Edge Chromium, Brave, Vivaldi,
+    Opera) and, with a recent Hindsight, Firefox profiles.
+    profile_path: an extracted profile folder (e.g. .../User Data/Default, or a Firefox
+        Profiles/<x>.default folder), or a 'User Data' folder holding several profiles.
+    browser: 'auto' (default; Hindsight detects the type) or one of chrome, chromium, edge,
+        brave, vivaldi, firefox, tor (Opera: leave auto).
     output_format: 'jsonl' (default, one record per line — parseable), 'sqlite',
         or 'xlsx'. These are the only formats hindsight accepts; common aliases
         ('json'→'jsonl', 'csv'/'xls'→'xlsx') are mapped, anything else falls
         back to 'jsonl' rather than failing on an invalid -f choice.
+    IE11 / legacy (EdgeHTML) Edge keep history in WebCacheV01.dat instead: use
+    misc.webcache_parse for that.
     """
-    import os
     _VALID = {"jsonl", "sqlite", "xlsx"}
     _ALIAS = {"json": "jsonl", "csv": "xlsx", "xls": "xlsx", "db": "sqlite", "sqlite3": "sqlite"}
     fmt = (output_format or "").strip().lower()
     fmt = _ALIAS.get(fmt, fmt)
     if fmt not in _VALID:
         fmt = "jsonl"
-    output_file = os.path.join(output_dir, "hindsight_chrome")
+    b = (browser or "auto").strip().lower()
+    if b in ("ie", "internet explorer", "legacy edge", "webcache"):
+        return {"success": False, "stdout": "", "stderr": "",
+                "error": "IE / legacy Edge history is in WebCacheV01.dat; use misc.webcache_parse."}
+    exe = _hindsight_bin()
+    if exe is None:
+        return {"success": False, "stdout": "", "stderr": "",
+                "error": "hindsight.py is not installed in this container (pip install pyhindsight; "
+                         "see trudi-lab Dockerfile)."}
+    output_file = os.path.join(output_dir, "hindsight_" + (b if b != "auto" else "browser"))
     cmd = [
-        "/usr/local/bin/hindsight.py",
+        exe,
         "-i", profile_path,
         "-o", output_file,
         "-f", fmt,
@@ -353,6 +470,8 @@ def hindsight_chrome(
         # (logging.basicConfig FileHandler crash before any parsing).
         "-l", os.path.join(output_dir, "hindsight.log"),
     ]
+    if b in _HINDSIGHT_BROWSERS:
+        cmd += ["-b", b]
     # cwd=output_dir: hindsight opens its log relative to the working
     # directory and crashes in FileHandler otherwise; the directory must
     # exist BEFORE Popen(cwd=…) or the spawn itself fails.
@@ -360,10 +479,127 @@ def hindsight_chrome(
         os.makedirs(output_dir, exist_ok=True)
     except OSError:
         pass
-    r = run(cmd, timeout=300, output_dir=output_dir, cwd=output_dir)
+    r = run(cmd, timeout=600, output_dir=output_dir, cwd=output_dir)
+    if (isinstance(r, dict) and not r.get("success") and "-b" in cmd
+            and re.search(r"invalid choice|browser", str(r.get("stderr", "")), re.I)):
+        # Older Hindsight builds know fewer -b names; let it auto-detect instead.
+        r = run(cmd[: cmd.index("-b")], timeout=600, output_dir=output_dir, cwd=output_dir)
+        if isinstance(r, dict):
+            r["note"] = f"-b {b} rejected by this Hindsight build; retried with auto-detect"
     if isinstance(r, dict):
         r["output_format"] = fmt
+        r["browser"] = b
     return r
+
+
+def _pyesedb_python() -> Optional[str]:
+    """First interpreter that can import pyesedb (libesedb-python wheel, or the
+    python3-libesedb package that plaso pulls in for the system python)."""
+    import subprocess
+    import sys
+    seen = set()
+    for c in (sys.executable, "/opt/venv/bin/python3", "/usr/bin/python3"):
+        if not c or c in seen or not os.path.exists(c):
+            continue
+        seen.add(c)
+        try:
+            if subprocess.run([c, "-c", "import pyesedb"], capture_output=True,
+                              timeout=20).returncode == 0:
+                return c
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return None
+
+
+@mcp.tool()
+@output_safe
+def webcache_parse(webcache_path: str, output_dir: str, max_rows: int = 5000) -> dict:
+    """
+    Parse an Internet Explorer 10/11 or legacy (EdgeHTML) Edge WebCacheV01.dat — where
+    Windows 8/10/Server 2012+ keep IE and old-Edge browsing history.
+    Extract it first from Users/<user>/AppData/Local/Microsoft/Windows/WebCache/
+    (copy the V01*.log files beside it too). Writes a TSV to output_dir and returns
+    the containers found plus the rows of interest.
+    Covers: History / MSHist (visited URLs, and file:/// entries = local or share files
+    opened through Explorer/IE — strong evidence of file access), iedownload (downloads
+    with target path and source URL), Content, Cookies, DOMStore. Times are UTC.
+    A 'dirty shutdown' database may lack the newest records (transaction logs are not
+    replayed); say so when reporting absence.
+    """
+    py = _pyesedb_python()
+    if py is None:
+        return {"success": False, "stdout": "", "stderr": "",
+                "error": "pyesedb not available: pip install libesedb-python in the container."}
+    os.makedirs(output_dir, exist_ok=True)
+    label = re.sub(r"[^A-Za-z0-9_.-]+", "_", webcache_path.strip("/"))[-120:]
+    out_tsv = os.path.join(output_dir, f"webcache_{label}.tsv")
+    r = run_with_output_file(
+        [py, "-I", _WEBCACHE_PARSER, webcache_path, "--max-rows", str(int(max_rows))],
+        output_path=out_tsv, timeout=600,
+    )
+    if not isinstance(r, dict) or not r.get("success"):
+        return r
+    try:
+        with open(out_tsv, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        r["error"] = str(e)
+        return r
+    h = next((i for i, ln in enumerate(lines) if ln.startswith("accessed_utc\t")), 3) + 1
+    header, rows = lines[:h], lines[h:]
+    interesting = [ln for ln in rows if re.search(
+        r"\tiedownload\t|file:///|\t(History|MSHist\d+)\t", ln)]
+    r["summary"] = header
+    r["rows_total"] = len(rows)
+    r["history_download_file_rows"] = interesting[:150]
+    r["truncated_rows"] = max(0, len(interesting) - 150)
+    r["stdout"] = "\n".join(header + interesting[:150])
+    return r
+
+
+# ── Cortex XDR offline collector ───────────────────────────────────────────────
+
+@mcp.tool()
+def xdr_detect_offline_collector(collector_path: str) -> dict:
+    """Check whether a file or folder is a Cortex XDR offline collector output
+    (offline_collector_output_*.zip, or its unzipped folder with manifest.json,
+    cortex-xdr-payload.log and many */script_output.zip). Returns the collector's
+    configuration, device name, user and artifact count, or is_collector=False."""
+    from tools import xdr_collector
+    ident = xdr_collector.detect(collector_path)
+    return {"success": True, "is_collector": ident is not None, **(ident or {})}
+
+
+@mcp.tool()
+@output_safe
+def xdr_normalize_offline_collector(collector_path: str, output_dir: str) -> dict:
+    """Normalize a Cortex XDR offline collector (zip or unzipped folder) into a
+    KAPE-style folder under output_dir, so every other TRUDI tool can use it:
+      output_dir/C/...        raw files at their original Windows paths, each
+                              SHA-256-checked against the collector's record
+                              ($USNJrnl:$J is written as C/$Extend/$J)
+      output_dir/xdr-parsed/  Cortex's pre-parsed results and live-response
+                              snapshots (process_listing, port_listing, handles,
+                              dns_cache, arp_cache, services, drivers, ...) as JSON
+      output_dir/collector/   manifest.json, payload log, provenance.tsv, NORMALIZED.json
+    Then treat output_dir/C/ exactly like a KAPE triage folder (ez.* on $MFT, $J,
+    hives, EVTX; artifact.parse_windows_prefetch; artifact.parse_windows_srum; ...).
+    The xdr-parsed JSON is third-party parser output: prefer your own parse of the
+    raw file and use it to cross-check, except live response, which has no raw copy."""
+    from tools import xdr_collector
+    if xdr_collector.detect(collector_path) is None:
+        return {"success": False, "stdout": "", "stderr": "",
+                "error": f"not a Cortex XDR offline collector: {collector_path}"}
+    try:
+        summary = xdr_collector.normalize(collector_path, output_dir)
+    except (OSError, ValueError) as e:
+        return {"success": False, "stdout": "", "stderr": "", "error": str(e)}
+    ok = summary.get("sha_mismatches", 0) == 0
+    return {"success": ok, **summary, "output_dir": output_dir,
+            "stdout": (f"{summary['raw_files']} raw files under {output_dir}/C, "
+                       f"{summary['parsed_outputs']} Cortex outputs in {output_dir}/xdr-parsed, "
+                       f"{summary['sha_mismatches']} hash mismatches"),
+            "stderr": "" if ok else "hash mismatches: see collector/provenance.tsv"}
 
 
 # ── AV scanning ──────────────────────────────────────────────────────────────
@@ -2005,6 +2241,16 @@ def capa_analyze(file_path: str, output_path: Optional[str] = None) -> dict:
         return {"success": False, "error":
                 "capa not installed — pip install flare-capa"}
     cmd = [binary]
+    # pip-installed capa has no embedded rules or signatures ("default embedded
+    # rules not found"); point it at the version-matched copies fetched into
+    # data/capa/ (overridable with TRUDI_CAPA_RULES / TRUDI_CAPA_SIGS).
+    _capa_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "capa")
+    _rules = os.environ.get("TRUDI_CAPA_RULES") or os.path.join(_capa_root, "rules")
+    _sigs = os.environ.get("TRUDI_CAPA_SIGS") or os.path.join(_capa_root, "sigs")
+    if os.path.isdir(_rules):
+        cmd += ["-r", _rules]
+    if os.path.isdir(_sigs):
+        cmd += ["-s", _sigs]
     if output_path:
         cmd += ["-j"]  # JSON output to stdout, we redirect via run() if needed
     cmd.append(file_path)

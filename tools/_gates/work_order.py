@@ -28,6 +28,9 @@ from ._dispositions import SOURCE_WAIVER_REASONS_ALL, index_from_entries
 # it (misc.regripper_hive runs `rip.pl`; plaso tools run log2timeline/psort/
 # pinfo). Keyed on the NORMALIZED (de-doubled) tool name.
 _BINARY_ALIASES = {
+    "artifact_parse_windows_event_logs": "evtx_dump",
+    "artifact_parse_windows_prefetch":   "trudi-prefetch",
+    "artifact_parse_windows_srum":       "chainsaw",
     "misc_regripper_hive":          "rip.pl",
     "misc_regripper_list_plugins":  "rip.pl",
     "plaso_create_timeline":        "log2timeline",

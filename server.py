@@ -22,6 +22,7 @@ from tools.carving import mcp as carving_mcp
 from tools.network import mcp as network_mcp
 from tools.enrichment import mcp as enrichment_mcp
 from tools.misc import mcp as misc_mcp
+from tools.artifacts import mcp as artifacts_mcp
 from tools.read_output import mcp as read_mcp
 from tools.reasoning import mcp as reason_mcp
 from tools.dair import mcp as dair_mcp
@@ -53,7 +54,7 @@ NAMESPACES = [
     ("img", imaging_mcp), ("vol", vol_mcp), ("tsk", tsk_mcp), ("ewf", ewf_mcp),
     ("ez", ez_mcp), ("plaso", plaso_mcp), ("yara", yara_mcp), ("hash", hash_mcp),
     ("strings", strings_mcp), ("carve", carving_mcp), ("net", network_mcp),
-    ("enrich", enrichment_mcp), ("misc", misc_mcp), ("read", read_mcp),
+    ("enrich", enrichment_mcp), ("misc", misc_mcp), ("artifact", artifacts_mcp), ("read", read_mcp),
     ("reason", reason_mcp), ("dair", dair_mcp), ("accuracy", accuracy_mcp),
     ("correlate", correlate_mcp), ("coverage", coverage_mcp),
     ("af", antiforensics_mcp), ("attribution", attribution_mcp),

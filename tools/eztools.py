@@ -150,17 +150,34 @@ def ez_evtxecmd(
     event_ids: Optional[str] = None,
 ) -> dict:
     """
-    Parse Windows Event Log (.evtx) files with enriched field mapping.
-    evtx_path: path to a single .evtx file or a directory of .evtx files.
-    event_ids: comma-separated event IDs to filter (e.g. '4624,4625,4688').
-    Maps decode raw XML fields into human-readable columns.
+    DEPRECATED compatibility alias — use artifact.parse_windows_event_logs.
+
+    Routes to the Linux-native evtx_dump backend and writes BOTH the canonical
+    trudi.artifact.v1 JSONL (<output_file>.jsonl) and an EZ-style CSV at the
+    original path, so existing callers keep working. `maps_dir` is ignored:
+    EvtxECmd map rendering is not part of the native path (structured EventData
+    is authoritative). See docs/linux-native-parsers.md.
     """
-    flag = "-f" if evtx_path.endswith(".evtx") else "-d"
-    args = [flag, evtx_path, "--csv", output_dir, "--csvf", output_file, "--maps", maps_dir]
-    if event_ids:
-        args += ["--inc", event_ids]
-    result = _ez(f"{EZ}/EvtxeCmd/EvtxECmd.dll", args, output_dir=output_dir, timeout=VOL_TIMEOUT)
-    _attach_evtx_coverage(result, output_dir, output_file)
+    from tools.artifacts import parse_windows_event_logs, export_ez_csv
+
+    base = output_file[:-4] if output_file.lower().endswith(".csv") else output_file
+    jsonl = os.path.join(output_dir, f"{base}.jsonl")
+    csv_path = os.path.join(output_dir, output_file)
+    result = parse_windows_event_logs(
+        evtx_path=evtx_path, output_path=jsonl, event_ids=event_ids, timeout=VOL_TIMEOUT
+    )
+    result["deprecated"] = (
+        "ez.evtxecmd is a compatibility alias; call artifact.parse_windows_event_logs "
+        "for the canonical records (this run used the Linux-native evtx_dump backend)."
+    )
+    if maps_dir and maps_dir != f"{EZ}/EvtxeCmd/Maps":
+        result.setdefault("warnings", []).append(
+            {"code": "maps_dir_ignored",
+             "message": "EvtxECmd maps are not used by the native backend"})
+    if result.get("success"):
+        csv_result = export_ez_csv(records_path=jsonl, output_path=csv_path, layout="evtx")
+        result["csv_output_path"] = csv_path if csv_result.get("success") else None
+        result["csv_rows"] = csv_result.get("rows")
     return result
 
 
@@ -310,12 +327,28 @@ def ez_pecmd(
     output_file: str = "prefetch.csv",
 ) -> dict:
     """
-    Parse Windows Prefetch files — execution timestamps (up to 8 last run times), file references.
-    prefetch_path: path to a single .pf file or the Prefetch directory.
+    DEPRECATED compatibility alias — use artifact.parse_windows_prefetch.
+
+    Routes to the Linux-native prefetch backend (clean-room Xpress-Huffman, no
+    RtlDecompressBufferEx) and writes BOTH canonical trudi.artifact.v1 JSONL and
+    an EZ-style CSV at the original path. PECmd itself cannot decompress Win8+
+    prefetch on Linux — that is why this alias exists.
     """
-    flag = "-f" if prefetch_path.endswith(".pf") else "-d"
-    args = [flag, prefetch_path, "--csv", output_dir, "--csvf", output_file]
-    return _ez(f"{EZ}/PECmd.dll", args, output_dir=output_dir)
+    from tools.artifacts import parse_windows_prefetch, export_ez_csv
+
+    base = output_file[:-4] if output_file.lower().endswith(".csv") else output_file
+    jsonl = os.path.join(output_dir, f"{base}.jsonl")
+    csv_path = os.path.join(output_dir, output_file)
+    result = parse_windows_prefetch(prefetch_path=prefetch_path, output_path=jsonl)
+    result["deprecated"] = (
+        "ez.pecmd is a compatibility alias; call artifact.parse_windows_prefetch "
+        "for the canonical records (this run used the Linux-native backend)."
+    )
+    if result.get("success"):
+        csv_result = export_ez_csv(records_path=jsonl, output_path=csv_path, layout="prefetch")
+        result["csv_output_path"] = csv_path if csv_result.get("success") else None
+        result["csv_rows"] = csv_result.get("rows")
+    return result
 
 
 # ── Jump Lists & LNK ──────────────────────────────────────────────────────────

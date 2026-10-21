@@ -19,6 +19,7 @@ FORENSIC_BINARY_PATTERNS = (
     r"(?<![\w-])tcpdump\b",
     r"(?<![\w-])clamscan\b",
     r"(?<![\w-])rip\.pl\b",
+    r"(?<![\w-])(?:evtx_dump|trudi-prefetch|chainsaw)\b",
 )
 
 MCP_WRAPPER_HINTS = {
@@ -71,6 +72,9 @@ MCP_WRAPPER_HINTS = {
     "xmount": "img.xmount_image",
     "tcpdump": "net.tcpdump_read / net.tcpdump_extract_http / net.tcpdump_extract_dns",
     "clamscan": "misc.clamscan_file / misc.clamscan_directory",
+    "evtx_dump": "artifact.parse_windows_event_logs (canonical JSONL, traced)",
+    "trudi-prefetch": "artifact.parse_windows_prefetch",
+    "chainsaw": "artifact.parse_windows_srum (SRUM) / misc.chainsaw_hunt (Sigma)",
     "rip.pl": "misc.regripper_hive",
 }
 

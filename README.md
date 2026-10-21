@@ -20,6 +20,7 @@ Built for the [Find Evil! hackathon](https://findevil.devpost.com/) — SANS Ins
 |-----|--------------|
 | [Try It Out](docs/try-it-out.md) | Step-by-step: browse a finished run (no key) or drive a fresh investigation end-to-end |
 | [Architecture](docs/architecture.md) | Components, MCP boundary, guardrail tiers, security boundaries ([Mermaid source](docs/architecture.mmd) · [diagram PNG](docs/media/architecture.png)) |
+| [Linux-native parsers](docs/linux-native-parsers.md) | EVTX / Prefetch / SRUM without Windows — canonical `trudi.artifact.v1` schema, backends, licensing, migration |
 | [Project Description](docs/project-description.md) | Design rationale — reasoning loop, gates, curiosity budget |
 | [Dataset Documentation](docs/datasets.md) | Every case's provenance, evidence source, findings, and answer key |
 | [Accuracy Report](docs/accuracy-report.md) | False positives, missed artifacts, hallucinations caught, confidence calibration, spoliation |
@@ -379,7 +380,7 @@ All forensic execution goes through the TRUDI MCP server — **25 namespaces** i
 | `vol.*` | Memory forensics (Volatility 3) | `pstree`, `pslist`, `psscan`, `cmdline`, `netscan`, `dlllist`, `malfind`, `hollowprocesses`, `pebmasquerade`, `suspicious_threads`, `scheduled_tasks`, `registry_hivelist`, `dumpfiles` |
 | `tsk.*` | Filesystem (Sleuth Kit) | `fls`, `icat`, `istat`, `ils`, `mactime`, `tsk_recover`, `sigfind`, `mmls`, `fsstat`, `jls`, `jcat` |
 | `ewf.*` | E01 images | `ewf_mount`, `ewf_info`, `ewf_verify`, `mount_full_image`, `mount_ntfs` |
-| `ez.*` | Windows artifacts (EZ Tools) | `mftecmd`, `evtxecmd`, `recmd_hive`, `amcacheparser`, `appcompatcacheparser`, `pecmd`, `lecmd`, `jlecmd`, `sbecmd`, `wxtcmd`, `sqlecmd`, `rbcmd` |
+| `ez.*` | Windows artifacts (EZ Tools; `evtxecmd`/`pecmd` are deprecated aliases over `artifact.*`) | `mftecmd`, `evtxecmd`, `recmd_hive`, `amcacheparser`, `appcompatcacheparser`, `pecmd`, `lecmd`, `jlecmd`, `sbecmd`, `wxtcmd`, `sqlecmd`, `rbcmd` |
 | `plaso.*` | Super-timeline | `plaso_create_timeline`, `plaso_export_csv`, `plaso_filter_incident_window`, `plaso_info` |
 | `yara.*` | Threat hunting | `yara_scan_file`, `yara_scan_directory`, `yara_scan_memory_image`, `yara_scan_strings` |
 | `hash.*` | Integrity / similarity | `hash_file`, `hash_directory`, `verify_evidence_hash`, `ssdeep_hash`, `hashdeep_compute` |
@@ -388,6 +389,7 @@ All forensic execution goes through the TRUDI MCP server — **25 namespaces** i
 | `net.*` | Network analysis | `tcpdump_read`, `tcpdump_extract_http`, `tcpdump_extract_dns`, `tcpdump_extract_ips`, `ngrep_search` |
 | `enrich.*` | Threat intel | `vt_lookup_hash`, `vt_lookup_ip`, `vt_lookup_domain`, `abuseipdb_check` |
 | `misc.*` | Windows artifacts | `evtx_dump`, `evtx_filter`, `regripper_hive`, `parse_scheduled_tasks`, `usbdeviceforensics`, `usnparser_parse`, `analyzeMFT_parse`, `hindsight_chrome`, `clamscan_file`, `pe_scanner`, `pdf_parser_analyze` |
+| `artifact.*` | **Linux-native Windows artifacts** (canonical `trudi.artifact.v1` JSONL) | `parse_windows_event_logs`, `parse_windows_prefetch`, `parse_windows_srum`, `event_record_xml`, `build_wevt_cache`, `parser_capabilities`, `export_ez_csv` |
 | `read.*` | Produced-output reads (traced, citable) | `read_output` (CSV/JSON/TXT under analysis/exports/reports — query, columns, where), `read_mail` (extracted mbox/.eml — message bodies, sender/recipient roster) |
 | `reason.*` | Adversarial review | `reason_plan`, `reason_hypothesize`, `reason_evaluate_finding`, `reason_confidence_score`, `reason_cite_check`, `reason_synthesize`, `reason_pre_report_check` |
 | `dair.*` | Phase director (state machine) | `dair_assess` |
